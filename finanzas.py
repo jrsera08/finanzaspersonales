@@ -113,9 +113,9 @@ st.markdown("""
 
 # ==================== USUARIOS ====================
 USUARIOS = {
-    'juan': {
+    'mary': {
         'password_hash': '81dc9bdb52d04dc20036dbd8313ed055',  # md5('1234')
-        'nombre_real': 'Juan Pérez',
+        'nombre_real': 'Marivelys Molina',
         'rol': 'usuario'
     },
     'maria': {
@@ -357,6 +357,10 @@ def mostrar_dashboard():
         st.session_state.orden_columna = 'fecha_hora'
         st.session_state.orden_ascendente = False
     
+    # Inicializar usuario_seleccionado para admin
+    if 'usuario_seleccionado' not in st.session_state:
+        st.session_state.usuario_seleccionado = st.session_state['username']
+    
     # Sidebar
     with st.sidebar:
         st.markdown(f"### 👤 {st.session_state['nombre_real']}")
@@ -365,7 +369,7 @@ def mostrar_dashboard():
         st.markdown("---")
         
         if st.button("🚪 Cerrar Sesión", use_container_width=True):
-            for key in ['logged_in', 'username', 'nombre_real', 'rol']:
+            for key in ['logged_in', 'username', 'nombre_real', 'rol', 'usuario_seleccionado']:
                 if key in st.session_state:
                     del st.session_state[key]
             st.rerun()
@@ -375,6 +379,29 @@ def mostrar_dashboard():
         
         df = cargar_datos_excel()
         
+        # ========== SELECTOR DE USUARIO PARA ADMIN ==========
+        if st.session_state['rol'] == 'admin':
+            st.markdown("### 👥 Visualizar usuario")
+            usuarios_disponibles_admin = ['Todos'] + list(USUARIOS.keys())
+            usuario_seleccionado_admin = st.selectbox(
+                "Seleccionar usuario",
+                options=usuarios_disponibles_admin,
+                index=0,
+                key="select_usuario_admin"
+            )
+            
+            if usuario_seleccionado_admin == 'Todos':
+                usuario_filtro = None
+                st.session_state.usuario_seleccionado = 'Todos'
+            else:
+                usuario_filtro = [usuario_seleccionado_admin]
+                st.session_state.usuario_seleccionado = usuario_seleccionado_admin
+            
+            st.markdown("---")
+        else:
+            usuario_filtro = None
+        
+        # Filtros comunes
         if not df.empty:
             filtro_moneda = st.multiselect(
                 "Moneda", 
@@ -388,23 +415,65 @@ def mostrar_dashboard():
                 default=['ingreso', 'egreso']
             )
             
-            usuarios_disponibles = df['username'].unique().tolist()
-            filtro_usuario = st.multiselect(
-                "Usuario", 
-                options=usuarios_disponibles,
-                default=usuarios_disponibles
-            )
+            # Filtros según rol
+            if st.session_state['rol'] != 'admin':
+                # Usuarios normales: solo ven sus propios registros
+                filtro_usuario = [st.session_state['username']]
+            else:
+                # Admin: puede seleccionar usuarios adicionales
+                if usuario_filtro is None:
+                    usuarios_disponibles = df['username'].unique().tolist()
+                    # Valor por defecto seguro
+                    default_value = usuarios_disponibles if usuarios_disponibles else []
+                    filtro_usuario = st.multiselect(
+                        "Usuario (filtro adicional)", 
+                        options=usuarios_disponibles,
+                        default=default_value
+                    )
+                else:
+                    filtro_usuario = usuario_filtro
         else:
             filtro_moneda = ['CUP', 'USD']
             filtro_tipo = ['ingreso', 'egreso']
-            filtro_usuario = []
+            if st.session_state['rol'] != 'admin':
+                filtro_usuario = [st.session_state['username']]
+            else:
+                filtro_usuario = []
+                usuario_filtro = None
+    
+    # Aplicar filtros según rol
+    df = cargar_datos_excel()
+    
+    if not df.empty:
+        # Filtro base por moneda y tipo
+        df_filtrado_base = df[
+            (df['moneda'].isin(filtro_moneda)) &
+            (df['tipo'].isin(filtro_tipo))
+        ]
+        
+        # Filtro por usuario según rol
+        if st.session_state['rol'] == 'admin':
+            if usuario_filtro is None:
+                # Ver todos los usuarios
+                df_filtrado = df_filtrado_base
+            else:
+                # Ver solo usuario seleccionado
+                df_filtrado = df_filtrado_base[df_filtrado_base['username'].isin(filtro_usuario)]
+        else:
+            # Usuario normal: solo ve sus propios registros
+            df_filtrado = df_filtrado_base[df_filtrado_base['username'] == st.session_state['username']]
+    else:
+        df_filtrado = df
     
     # Título y botones principales
     col_title, col_ingreso, col_egreso = st.columns([3, 1, 1])
     
     with col_title:
         st.title("💰 Dashboard Financiero")
-        st.markdown(f"**Bienvenido/a, {st.session_state['nombre_real']}!**")
+        if st.session_state['rol'] == 'admin' and st.session_state.usuario_seleccionado != 'Todos':
+            st.markdown(f"**Visualizando finanzas de: {st.session_state.usuario_seleccionado}**")
+        else:
+            st.markdown(f"**Bienvenido/a, {st.session_state['nombre_real']}!**")
     
     with col_ingreso:
         if st.button("➕ INGRESO", use_container_width=True):
@@ -415,18 +484,6 @@ def mostrar_dashboard():
             modal_egreso()
     
     st.markdown("---")
-    
-    # Cargar datos filtrados
-    df = cargar_datos_excel()
-    
-    if not df.empty and filtro_usuario:
-        df_filtrado = df[
-            (df['moneda'].isin(filtro_moneda)) &
-            (df['tipo'].isin(filtro_tipo)) &
-            (df['username'].isin(filtro_usuario))
-        ]
-    else:
-        df_filtrado = df if not df.empty else pd.DataFrame()
     
     # Tarjetas de saldo
     saldos = calcular_saldos(df_filtrado)
@@ -495,7 +552,7 @@ def mostrar_dashboard():
         
         st.markdown("---")
         
-         # ==================== TABLA DE MOVIMIENTOS ESTILO PROFESIONAL ====================
+        # ==================== TABLA DE MOVIMIENTOS ====================
         st.markdown("### 📋 Historial de Movimientos")
         
         df_mostrar = df_filtrado.copy()
@@ -520,177 +577,97 @@ def mostrar_dashboard():
         # Mostrar cantidad de registros
         st.caption(f"Mostrando {len(df_ordenado)} de {len(df_filtrado)} movimientos")
         
-        if st.session_state['rol'] == 'admin' and not df_ordenado.empty:
-            # ========== TABLA PARA ADMINISTRADOR ==========
-            # Encabezados
-            col1, col2, col3, col4, col5, col6, col7, col8, col9 = st.columns([1.5, 2, 1, 0.8, 0.8, 1.2, 2.5, 0.8, 0.8])
-            
-            with col1:
-                if st.button("Fecha", key="order_fecha"):
-                    if st.session_state.orden_columna == 'fecha_hora':
-                        st.session_state.orden_ascendente = not st.session_state.orden_ascendente
-                    else:
-                        st.session_state.orden_columna = 'fecha_hora'
-                        st.session_state.orden_ascendente = False
-                    st.rerun()
-            with col2:
-                if st.button("Nombre", key="order_nombre"):
-                    if st.session_state.orden_columna == 'nombre_real':
-                        st.session_state.orden_ascendente = not st.session_state.orden_ascendente
-                    else:
-                        st.session_state.orden_columna = 'nombre_real'
-                        st.session_state.orden_ascendente = False
-                    st.rerun()
-            with col3:
-                if st.button("Usuario", key="order_usuario"):
-                    if st.session_state.orden_columna == 'username':
-                        st.session_state.orden_ascendente = not st.session_state.orden_ascendente
-                    else:
-                        st.session_state.orden_columna = 'username'
-                        st.session_state.orden_ascendente = False
-                    st.rerun()
-            with col4:
-                if st.button("Moneda", key="order_moneda"):
-                    if st.session_state.orden_columna == 'moneda':
-                        st.session_state.orden_ascendente = not st.session_state.orden_ascendente
-                    else:
-                        st.session_state.orden_columna = 'moneda'
-                        st.session_state.orden_ascendente = False
-                    st.rerun()
-            with col5:
-                if st.button("Tipo", key="order_tipo"):
-                    if st.session_state.orden_columna == 'tipo':
-                        st.session_state.orden_ascendente = not st.session_state.orden_ascendente
-                    else:
-                        st.session_state.orden_columna = 'tipo'
-                        st.session_state.orden_ascendente = False
-                    st.rerun()
-            with col6:
-                if st.button("Monto", key="order_monto"):
-                    if st.session_state.orden_columna == 'monto':
-                        st.session_state.orden_ascendente = not st.session_state.orden_ascendente
-                    else:
-                        st.session_state.orden_columna = 'monto'
-                        st.session_state.orden_ascendente = False
-                    st.rerun()
-            with col7:
-                st.markdown("**Descripción**")
-            with col8:
-                st.markdown("**Editar**")
-            with col9:
-                st.markdown("**Eliminar**")
-            
-            st.divider()
-            
-            # Filas de datos con estilo profesional
-            for idx, row in df_ordenado.iterrows():
-                cols = st.columns([1.5, 2, 1, 0.8, 0.8, 1.2, 2.5, 0.8, 0.8])
-                
-                with cols[0]:
-                    st.write(row['fecha_hora_str'])
-                with cols[1]:
-                    st.write(row['nombre_real'])
-                with cols[2]:
-                    st.write(row['username'])
-                with cols[3]:
-                    st.write(row['moneda'])
-                with cols[4]:
-                    st.write(row['tipo'])
-                with cols[5]:
-                    st.write(row['monto_str'])
-                with cols[6]:
-                    st.write(row['descripcion'])
-                with cols[7]:
-                    if st.button("✏️", key=f"edit_{row['id']}", help="Editar movimiento"):
-                        modal_editar(row['id'], row['monto'], row['descripcion'])
-                with cols[8]:
-                    if st.button("🗑️", key=f"delete_{row['id']}", help="Eliminar movimiento"):
-                        modal_eliminar(row['id'], row['descripcion'])
-                
-                st.divider()
+        # ========== TABLA CON BOTONES PARA TODOS LOS USUARIOS ==========
+        # Encabezados (con botones de ordenamiento)
+        col1, col2, col3, col4, col5, col6, col7, col8, col9 = st.columns([1.5, 2, 1, 0.8, 0.8, 1.2, 2.5, 0.8, 0.8])
         
-        else:
-            # ========== TABLA PARA USUARIO NORMAL ==========
-            # Encabezados
-            col1, col2, col3, col4, col5, col6, col7 = st.columns([1.5, 2, 1, 0.8, 0.8, 1.2, 2.5])
+        with col1:
+            if st.button("Fecha", key="order_fecha"):
+                if st.session_state.orden_columna == 'fecha_hora':
+                    st.session_state.orden_ascendente = not st.session_state.orden_ascendente
+                else:
+                    st.session_state.orden_columna = 'fecha_hora'
+                    st.session_state.orden_ascendente = False
+                st.rerun()
+        with col2:
+            if st.button("Nombre", key="order_nombre"):
+                if st.session_state.orden_columna == 'nombre_real':
+                    st.session_state.orden_ascendente = not st.session_state.orden_ascendente
+                else:
+                    st.session_state.orden_columna = 'nombre_real'
+                    st.session_state.orden_ascendente = False
+                st.rerun()
+        with col3:
+            if st.button("Usuario", key="order_usuario"):
+                if st.session_state.orden_columna == 'username':
+                    st.session_state.orden_ascendente = not st.session_state.orden_ascendente
+                else:
+                    st.session_state.orden_columna = 'username'
+                    st.session_state.orden_ascendente = False
+                st.rerun()
+        with col4:
+            if st.button("Moneda", key="order_moneda"):
+                if st.session_state.orden_columna == 'moneda':
+                    st.session_state.orden_ascendente = not st.session_state.orden_ascendente
+                else:
+                    st.session_state.orden_columna = 'moneda'
+                    st.session_state.orden_ascendente = False
+                st.rerun()
+        with col5:
+            if st.button("Tipo", key="order_tipo"):
+                if st.session_state.orden_columna == 'tipo':
+                    st.session_state.orden_ascendente = not st.session_state.orden_ascendente
+                else:
+                    st.session_state.orden_columna = 'tipo'
+                    st.session_state.orden_ascendente = False
+                st.rerun()
+        with col6:
+            if st.button("Monto", key="order_monto"):
+                if st.session_state.orden_columna == 'monto':
+                    st.session_state.orden_ascendente = not st.session_state.orden_ascendente
+                else:
+                    st.session_state.orden_columna = 'monto'
+                    st.session_state.orden_ascendente = False
+                st.rerun()
+        with col7:
+            st.markdown("**Descripción**")
+        with col8:
+            st.markdown("**Editar**")
+        with col9:
+            st.markdown("**Eliminar**")
+        
+        st.divider()
+        
+        # Filas de datos con botones para TODOS los usuarios
+        for idx, row in df_ordenado.iterrows():
+            cols = st.columns([1.5, 2, 1, 0.8, 0.8, 1.2, 2.5, 0.8, 0.8])
             
-            with col1:
-                if st.button("Fecha", key="order_fecha_user"):
-                    if st.session_state.orden_columna == 'fecha_hora':
-                        st.session_state.orden_ascendente = not st.session_state.orden_ascendente
-                    else:
-                        st.session_state.orden_columna = 'fecha_hora'
-                        st.session_state.orden_ascendente = False
-                    st.rerun()
-            with col2:
-                if st.button("Nombre", key="order_nombre_user"):
-                    if st.session_state.orden_columna == 'nombre_real':
-                        st.session_state.orden_ascendente = not st.session_state.orden_ascendente
-                    else:
-                        st.session_state.orden_columna = 'nombre_real'
-                        st.session_state.orden_ascendente = False
-                    st.rerun()
-            with col3:
-                if st.button("Usuario", key="order_usuario_user"):
-                    if st.session_state.orden_columna == 'username':
-                        st.session_state.orden_ascendente = not st.session_state.orden_ascendente
-                    else:
-                        st.session_state.orden_columna = 'username'
-                        st.session_state.orden_ascendente = False
-                    st.rerun()
-            with col4:
-                if st.button("Moneda", key="order_moneda_user"):
-                    if st.session_state.orden_columna == 'moneda':
-                        st.session_state.orden_ascendente = not st.session_state.orden_ascendente
-                    else:
-                        st.session_state.orden_columna = 'moneda'
-                        st.session_state.orden_ascendente = False
-                    st.rerun()
-            with col5:
-                if st.button("Tipo", key="order_tipo_user"):
-                    if st.session_state.orden_columna == 'tipo':
-                        st.session_state.orden_ascendente = not st.session_state.orden_ascendente
-                    else:
-                        st.session_state.orden_columna = 'tipo'
-                        st.session_state.orden_ascendente = False
-                    st.rerun()
-            with col6:
-                if st.button("Monto", key="order_monto_user"):
-                    if st.session_state.orden_columna == 'monto':
-                        st.session_state.orden_ascendente = not st.session_state.orden_ascendente
-                    else:
-                        st.session_state.orden_columna = 'monto'
-                        st.session_state.orden_ascendente = False
-                    st.rerun()
-            with col7:
-                st.markdown("**Descripción**")
+            with cols[0]:
+                st.write(row['fecha_hora_str'])
+            with cols[1]:
+                st.write(row['nombre_real'])
+            with cols[2]:
+                st.write(row['username'])
+            with cols[3]:
+                st.write(row['moneda'])
+            with cols[4]:
+                st.write(row['tipo'])
+            with cols[5]:
+                st.write(row['monto_str'])
+            with cols[6]:
+                st.write(row['descripcion'])
+            with cols[7]:
+                if st.button("✏️", key=f"edit_{row['id']}", help="Editar movimiento"):
+                    modal_editar(row['id'], row['monto'], row['descripcion'])
+            with cols[8]:
+                if st.button("🗑️", key=f"delete_{row['id']}", help="Eliminar movimiento"):
+                    modal_eliminar(row['id'], row['descripcion'])
             
             st.divider()
-            
-            # Filas de datos con estilo profesional
-            for idx, row in df_ordenado.iterrows():
-                cols = st.columns([1.5, 2, 1, 0.8, 0.8, 1.2, 2.5])
-                
-                with cols[0]:
-                    st.write(row['fecha_hora_str'])
-                with cols[1]:
-                    st.write(row['nombre_real'])
-                with cols[2]:
-                    st.write(row['username'])
-                with cols[3]:
-                    st.write(row['moneda'])
-                with cols[4]:
-                    st.write(row['tipo'])
-                with cols[5]:
-                    st.write(row['monto_str'])
-                with cols[6]:
-                    st.write(row['descripcion'])
-                
-                st.divider()
         
         # Botón exportar
         if st.button("📥 Descargar Excel", use_container_width=True):
-            st.success("✅ Los datos están guardados en 'movimientos.xlsx'") 
+            st.success("✅ Los datos están guardados en 'movimientos.xlsx'")
         
         # Gráfico de evolución del saldo
         st.markdown("### 📈 Evolución del Saldo Histórico")
@@ -731,7 +708,7 @@ def mostrar_dashboard():
             else:
                 st.info("No hay datos históricos en USD")
         
-        st.markdown("---")   
+        st.markdown("---")
         
     else:
         st.info("ℹ️ No hay movimientos registrados. ¡Usa los botones INGRESO o EGRESO para comenzar!")
@@ -743,7 +720,8 @@ def mostrar_dashboard():
             2. **Completa el modal**: Selecciona moneda, ingresa monto y descripción
             3. **Visualiza dashboard**: Saldos y gráficos se actualizan automáticamente
             4. **Filtra datos**: Usa la barra lateral para ver información específica
-            5. **Administradores**: Pueden editar/eliminar movimientos usando los botones ✏️ y 🗑️ en cada fila
+            5. **Todos los usuarios** pueden editar/eliminar sus propios movimientos
+            6. **Administrador**: Puede ver y editar las finanzas de cualquier usuario usando el selector en la barra lateral
             
             Los datos se guardan automáticamente en `movimientos.xlsx`
             """)
